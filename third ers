@@ -1,0 +1,749 @@
+package com.mycompany.gfl2clicker;
+
+import javax.swing.*;
+import javax.swing.border.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
+import javax.imageio.ImageIO;
+import javax.sound.sampled.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+
+public class GFL2ClickerApp extends JFrame {
+
+    // --- GAME ENGINE STATE ---
+    private double balance = 100.0;
+    private double moneyPerClick = 1.0;
+    private int pityCounter = 0;
+    private int totalPulls = 0;
+    private final int HARD_PITY = 80;
+    private final double BASE_GACHA_COST = 50.0;
+
+    // Victory Goal ($1 Billion)
+    private final double VICTORY_GOAL = 1_000_000_000.0;
+    private boolean victoryAchieved = false;
+
+    private final Gun[] equippedGuns = new Gun[10];
+    private final List<Gun> inventory = new ArrayList<>();
+    private final List<Gun> gachaPool = new ArrayList<>();
+
+    // --- UI COMPONENTS ---
+    private JLabel balanceLabel;
+    private JLabel mpsLabel;
+    private JLabel goalLabel;
+    private JProgressBar goalProgressBar;
+    private JLabel pityLabel;
+    private JLabel pullResultLabel;
+    private JLabel pullResultIconLabel;
+    private JButton pullButton;
+    private JPanel equippedGridPanel;
+    private JPanel inventoryPanel;
+    private JProgressBar pityProgressBar;
+    private ClickerTargetPanel clickerTargetPanel;
+
+    private final Random random = new Random();
+
+    public GFL2ClickerApp() {
+        setTitle("GFL2 Tactical Clicker & Gacha - Goal: $1 Billion");
+        setSize(1050, 750);
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLocationRelativeTo(null);
+        getContentPane().setBackground(new Color(24, 26, 31));
+
+        initGachaPool();
+        initUI();
+        startGameLoop();
+    }
+
+    // ==========================================
+    // 1. DATA MODELS & POOL INIT
+    // ==========================================
+    public static class Gun {
+        String id;
+        String name;
+        int rarity; // 3, 4, 5, or 6 (Legend Rare)
+        double baseMps;
+        int duplicates;
+        String spriteFileName;
+
+        public Gun(String id, String name, int rarity, double baseMps, String spriteFileName) {
+            this.id = id;
+            this.name = name;
+            this.rarity = rarity;
+            this.baseMps = baseMps;
+            this.duplicates = 0;
+            this.spriteFileName = spriteFileName;
+        }
+
+        public double getEffectiveMps() {
+            return baseMps * (1.0 + (0.25 * duplicates));
+        }
+
+        public Color getRarityColor() {
+            switch (rarity) {
+                case 6: return new Color(255, 70, 0);   // LEGEND RARE (Crimson Orange)
+                case 5: return new Color(255, 183, 3);  // SSR (Gold)
+                case 4: return new Color(157, 78, 221); // SR (Purple)
+                default: return new Color(72, 149, 239); // R (Blue)
+            }
+        }
+    }
+
+    private void initGachaPool() {
+        // 6-Star LEGEND RARE (0.01% Rate)
+        gachaPool.add(new Gun("Izanami of the Dusk", "Izanami", 6, 500.0, "izanami.png"));
+
+        // 5-Star Guns (2.00% Rate)
+        gachaPool.add(new Gun("wa2000", "WA2000", 5, 21.0, "wa2000.png"));
+        gachaPool.add(new Gun("hk416", "HK416", 5, 25.0, "hk416.png"));
+        gachaPool.add(new Gun("vector", "Vector", 5, 18.0, "vector.png"));
+        gachaPool.add(new Gun("Lunos the Eclipsed", "Lunos", 5, 100.0, "lunos.png"));
+
+        // 4-Star Guns (13.00% Rate)
+        gachaPool.add(new Gun("ump45", "UMP45", 4, 4.5, "ump45.png"));
+        gachaPool.add(new Gun("m4a1", "M4A1", 4, 5.2, "m4a1.png"));
+        gachaPool.add(new Gun("kar98k", "Kar98k", 4, 6.0, "kar98k.png"));
+
+        // 3-Star Guns (84.99% Rate)
+        gachaPool.add(new Gun("skorpion", "Skorpion", 3, 1.2, "skorpion.png"));
+        gachaPool.add(new Gun("mp5", "MP5", 3, 1.5, "mp5.png"));
+        gachaPool.add(new Gun("p90", "P90", 3, 1.8, "p90.png"));
+    }
+
+    public double getCurrentGachaCost() {
+        // Dynamic Price Formula: Base * (1.08 ^ totalPulls)
+        return BASE_GACHA_COST * Math.pow(1.01, totalPulls);
+    }
+
+    // ==========================================
+    // 2. UI LAYOUT BUILDER
+    // ==========================================
+    private void initUI() {
+        setLayout(new BorderLayout());
+
+        // Top Status Header with Goal Progress
+        JPanel topHeader = new JPanel(new GridLayout(2, 1, 0, 5));
+        topHeader.setBackground(new Color(15, 17, 21));
+        topHeader.setBorder(new EmptyBorder(10, 20, 10, 20));
+
+        JPanel statsRow = new JPanel(new GridLayout(1, 2, 10, 0));
+        statsRow.setOpaque(false);
+
+        balanceLabel = new JLabel("Moneys: $100.00", SwingConstants.LEFT);
+        balanceLabel.setFont(new Font("SansSerif", Font.BOLD, 20));
+        balanceLabel.setForeground(new Color(255, 183, 3));
+
+        mpsLabel = new JLabel("MPS: $0.00 / sec", SwingConstants.RIGHT);
+        mpsLabel.setFont(new Font("SansSerif", Font.BOLD, 18));
+        mpsLabel.setForeground(new Color(0, 180, 216));
+
+        statsRow.add(balanceLabel);
+        statsRow.add(mpsLabel);
+
+        // $1 Billion Goal Progress Bar
+        JPanel goalRow = new JPanel(new BorderLayout(10, 0));
+        goalRow.setOpaque(false);
+
+        goalLabel = new JLabel("Goal ($1B): 0.00%", SwingConstants.LEFT);
+        goalLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
+        goalLabel.setForeground(Color.LIGHT_GRAY);
+
+        goalProgressBar = new JProgressBar(0, 100);
+        goalProgressBar.setValue(0);
+        goalProgressBar.setForeground(new Color(0, 201, 167));
+        goalProgressBar.setBackground(new Color(35, 38, 47));
+
+        goalRow.add(goalLabel, BorderLayout.WEST);
+        goalRow.add(goalProgressBar, BorderLayout.CENTER);
+
+        topHeader.add(statsRow);
+        topHeader.add(goalRow);
+
+        add(topHeader, BorderLayout.NORTH);
+
+        // Center Navigation Tabs
+        JTabbedPane tabbedPane = new JTabbedPane();
+        tabbedPane.setBackground(new Color(24, 26, 31));
+        tabbedPane.setForeground(Color.WHITE);
+        tabbedPane.setFont(new Font("SansSerif", Font.BOLD, 14));
+
+        tabbedPane.addTab("Terminal (Clicker)", createClickerPanel());
+        tabbedPane.addTab("Supply Drop (Gacha)", createGachaPanel());
+        tabbedPane.addTab("Armory (Loadout)", createArmoryPanel());
+
+        add(tabbedPane, BorderLayout.CENTER);
+    }
+
+    // --- TAB 1: CLICKER TERMINAL WITH BOUNCE & MUZZLE FLARES ---
+    private JPanel createClickerPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(new Color(24, 26, 31));
+
+        clickerTargetPanel = new ClickerTargetPanel();
+        panel.add(clickerTargetPanel, BorderLayout.CENTER);
+
+        JLabel hintLabel = new JLabel("Click the Cookie/Terminal to earn credits! Equipped guns fire automatically & on click.", SwingConstants.CENTER);
+        hintLabel.setForeground(Color.GRAY);
+        hintLabel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        panel.add(hintLabel, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    // --- TAB 2: GACHA BANNER WITH DYNAMIC COST & RATES ---
+    private JPanel createGachaPanel() {
+        JPanel panel = new JPanel(new BorderLayout(15, 15));
+        panel.setBackground(new Color(24, 26, 31));
+        panel.setBorder(new EmptyBorder(15, 25, 15, 25));
+
+        // Banner Image Header
+        JLabel bannerLabel = new JLabel();
+        bannerLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        bannerLabel.setIcon(SpriteLoader.getSprite("banner.png", 600, 130, "GFL2 TACTICAL SUPPLY DROP BANNER", new Color(35, 38, 47)));
+        panel.add(bannerLabel, BorderLayout.NORTH);
+
+        // Center Drop Display & Drop Rates Panel
+        JPanel centerDisplay = new JPanel(new BorderLayout(10, 10));
+        centerDisplay.setOpaque(false);
+
+        pullResultIconLabel = new JLabel();
+        pullResultIconLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        pullResultIconLabel.setIcon(SpriteLoader.getSprite("unknown.png", 110, 110, "?", Color.DARK_GRAY));
+
+        pullResultLabel = new JLabel("Press Pull to start rolling!", SwingConstants.CENTER);
+        pullResultLabel.setFont(new Font("SansSerif", Font.BOLD, 15));
+        pullResultLabel.setForeground(Color.WHITE);
+
+        // Drop Rate Breakdown Display Box
+        JPanel ratesBox = new JPanel(new GridLayout(1, 4, 10, 0));
+        ratesBox.setBackground(new Color(35, 38, 47));
+        ratesBox.setBorder(BorderFactory.createTitledBorder(BorderFactory.createLineBorder(Color.GRAY), "Drop Probabilities", TitledBorder.CENTER, TitledBorder.TOP, new Font("SansSerif", Font.BOLD, 12), Color.WHITE));
+
+        ratesBox.add(createRateLabel("3★ R", "84.99%", new Color(72, 149, 239)));
+        ratesBox.add(createRateLabel("4★ SR", "13.00%", new Color(157, 78, 221)));
+        ratesBox.add(createRateLabel("5★ SSR", "2.00%", new Color(255, 183, 3)));
+        ratesBox.add(createRateLabel("LEGEND", "???", new Color(255, 70, 0)));
+
+        centerDisplay.add(pullResultIconLabel, BorderLayout.NORTH);
+        centerDisplay.add(pullResultLabel, BorderLayout.CENTER);
+        centerDisplay.add(ratesBox, BorderLayout.SOUTH);
+
+        panel.add(centerDisplay, BorderLayout.CENTER);
+
+        // Bottom Controls: Pull Button & Pity Tracker
+        JPanel bottomControls = new JPanel(new GridLayout(2, 1, 10, 10));
+        bottomControls.setOpaque(false);
+
+        pullButton = new JButton(String.format("PULL 1x ($%.2f)", getCurrentGachaCost()));
+        pullButton.setFont(new Font("SansSerif", Font.BOLD, 18));
+        pullButton.setBackground(new Color(255, 183, 3));
+        pullButton.setForeground(Color.BLACK);
+        pullButton.setFocusPainted(false);
+        pullButton.addActionListener(e -> executeGachaPull());
+
+        JPanel pityPanel = new JPanel(new BorderLayout(10, 0));
+        pityPanel.setOpaque(false);
+        pityLabel = new JLabel("Pity Progress (0 / 80)", SwingConstants.LEFT);
+        pityLabel.setForeground(Color.LIGHT_GRAY);
+
+        pityProgressBar = new JProgressBar(0, HARD_PITY);
+        pityProgressBar.setValue(0);
+        pityProgressBar.setForeground(new Color(255, 183, 3));
+
+        pityPanel.add(pityLabel, BorderLayout.WEST);
+        pityPanel.add(pityProgressBar, BorderLayout.CENTER);
+
+        bottomControls.add(pullButton);
+        bottomControls.add(pityPanel);
+
+        panel.add(bottomControls, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JLabel createRateLabel(String title, String rate, Color color) {
+        JLabel lbl = new JLabel(String.format("<html><center><b>%s</b><br><font color='%s'>%s</font></center></html>", title, toHexString(color), rate), SwingConstants.CENTER);
+        lbl.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        return lbl;
+    }
+
+    private String toHexString(Color c) {
+        return String.format("#%02x%02x%02x", c.getRed(), c.getGreen(), c.getBlue());
+    }
+
+    // --- TAB 3: ARMORY & LOADOUT ---
+    private JPanel createArmoryPanel() {
+        JPanel mainPanel = new JPanel(new GridLayout(2, 1, 10, 10));
+        mainPanel.setBackground(new Color(24, 26, 31));
+        mainPanel.setBorder(new EmptyBorder(15, 15, 15, 15));
+
+        // Top Half: 10 Equipped Gun Slots
+        JPanel equippedContainer = new JPanel(new BorderLayout(5, 5));
+        equippedContainer.setOpaque(false);
+        TitledBorder border = BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(new Color(0, 180, 216)), "Equipped Loadout (Click slot to unequip)");
+        border.setTitleColor(Color.WHITE);
+        equippedContainer.setBorder(border);
+
+        equippedGridPanel = new JPanel(new GridLayout(2, 5, 10, 10));
+        equippedGridPanel.setOpaque(false);
+        refreshEquippedGrid();
+
+        equippedContainer.add(equippedGridPanel, BorderLayout.CENTER);
+
+        // Bottom Half: Unequipped Inventory
+        JPanel inventoryContainer = new JPanel(new BorderLayout(5, 5));
+        inventoryContainer.setOpaque(false);
+        TitledBorder invBorder = BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(Color.GRAY), "Armory Reserves (Click gun to equip)");
+        invBorder.setTitleColor(Color.WHITE);
+        inventoryContainer.setBorder(invBorder);
+
+        inventoryPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 10));
+        inventoryPanel.setBackground(new Color(35, 38, 47));
+
+        JScrollPane scrollPane = new JScrollPane(inventoryPanel);
+        scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_ALWAYS);
+        scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER);
+        scrollPane.getViewport().setBackground(new Color(35, 38, 47));
+
+        inventoryContainer.add(scrollPane, BorderLayout.CENTER);
+
+        mainPanel.add(equippedContainer);
+        mainPanel.add(inventoryContainer);
+
+        return mainPanel;
+    }
+
+    // ==========================================
+    // 3. GACHA LOGIC & PROBABILITY SYSTEM
+    // ==========================================
+    private void executeGachaPull() {
+        double cost = getCurrentGachaCost();
+        if (balance < cost) {
+            JOptionPane.showMessageDialog(this, String.format("Insufficient Credits! Need $%.2f", cost), "Gacha Error", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        balance -= cost;
+        pityCounter++;
+        totalPulls++;
+
+        Gun pulledGun;
+        double roll = random.nextDouble(); // Range [0.0, 1.0)
+
+        // Drop Percentages:
+        // 6-Star Legend Rare: 0.01% (0.0001)
+        // 5-Star SSR: 2.00% (0.0200)
+        // 4-Star SR: 13.00% (0.1300)
+        // 3-Star R: 84.99% (0.8499)
+
+        if (pityCounter >= HARD_PITY) {
+            // Hard Pity Yields a 5-Star or 6-Star
+            pulledGun = (roll < 0.05) ? getRandomGunByRarity(6) : getRandomGunByRarity(5);
+            pityCounter = 0;
+        } else if (roll < 0.0001) { // 0.01% Legend Rare
+            pulledGun = getRandomGunByRarity(6);
+            pityCounter = 0;
+        } else if (roll < 0.0201) { // 2.00% 5-Star
+            pulledGun = getRandomGunByRarity(5);
+            pityCounter = 0;
+        } else if (roll < 0.1501) { // 13.00% 4-Star
+            pulledGun = getRandomGunByRarity(4);
+        } else { // 84.99% 3-Star
+            pulledGun = getRandomGunByRarity(3);
+        }
+
+        // Play SSR/Legend sound if pulled 5★ or 6★
+        if (pulledGun.rarity >= 5) {
+            /* AUDIO HOOK: SSR / Legend Pull Sound */
+            AudioPlayer.playSound("sounds/ssr_pull.wav");
+        } else {
+            AudioPlayer.playSound("sounds/pull.wav");
+        }
+
+        processAcquiredGun(pulledGun);
+        updateHeaderDisplays();
+        updateGachaUI(pulledGun);
+    }
+
+    private Gun getRandomGunByRarity(int rarity) {
+        List<Gun> matching = new ArrayList<>();
+        for (Gun g : gachaPool) {
+            if (g.rarity == rarity) matching.add(g);
+        }
+        if (matching.isEmpty()) return gachaPool.get(0);
+        Gun template = matching.get(random.nextInt(matching.size()));
+        return new Gun(template.id, template.name, template.rarity, template.baseMps, template.spriteFileName);
+    }
+
+    private void processAcquiredGun(Gun newGun) {
+        Gun existing = findOwnedGun(newGun.id);
+
+        if (existing != null) {
+            existing.duplicates++;
+        } else {
+            boolean equipped = false;
+            for (int i = 0; i < equippedGuns.length; i++) {
+                if (equippedGuns[i] == null) {
+                    equippedGuns[i] = newGun;
+                    equipped = true;
+                    break;
+                }
+            }
+            if (!equipped) {
+                inventory.add(newGun);
+            }
+        }
+
+        refreshEquippedGrid();
+        refreshInventoryUI();
+    }
+
+    private Gun findOwnedGun(String id) {
+        for (Gun g : equippedGuns) {
+            if (g != null && g.id.equals(id)) return g;
+        }
+        for (Gun g : inventory) {
+            if (g.id.equals(id)) return g;
+        }
+        return null;
+    }
+
+    private double calculateTotalMPS() {
+        double total = 0.0;
+        for (Gun g : equippedGuns) {
+            if (g != null) {
+                total += g.getEffectiveMps();
+            }
+        }
+        return total;
+    }
+
+    // ==========================================
+    // 4. UI REFRESH & GOAL CHECKING
+    // ==========================================
+    private void updateHeaderDisplays() {
+        balanceLabel.setText(String.format("Credits: $%.2f", balance));
+        mpsLabel.setText(String.format("MPS: $%.2f / sec", calculateTotalMPS()));
+
+        // Update Victory Goal Bar
+        double percent = Math.min(100.0, (balance / VICTORY_GOAL) * 100.0);
+        goalLabel.setText(String.format("Goal ($1B): %.2f%%", percent));
+        goalProgressBar.setValue((int) percent);
+
+        // Check Victory Condition
+        if (balance >= VICTORY_GOAL && !victoryAchieved) {
+            victoryAchieved = true;
+            AudioPlayer.playSound("sounds/victory.wav");
+            JOptionPane.showMessageDialog(this, 
+                "🎉 CONGRATULATIONS COMMANDER! 🎉\nYou have reached ONE BILLION CREDITS ($1,000,000,000)!", 
+                "VICTORY ACHIEVED", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
+    private void updateGachaUI(Gun pulled) {
+        pullResultLabel.setText(String.format("PULLED: [%d★] %s (+%.1f MPS)", pulled.rarity, pulled.name, pulled.getEffectiveMps()));
+        pullResultLabel.setForeground(pulled.getRarityColor());
+
+        ImageIcon icon = SpriteLoader.getSprite(pulled.spriteFileName, 110, 110, pulled.name, pulled.getRarityColor());
+        pullResultIconLabel.setIcon(icon);
+
+        pityLabel.setText(String.format("Pity Progress (%d / %d)", pityCounter, HARD_PITY));
+        pityProgressBar.setValue(pityCounter);
+
+        pullButton.setText(String.format("PULL 1x ($%.2f)", getCurrentGachaCost()));
+    }
+
+    private void refreshEquippedGrid() {
+        equippedGridPanel.removeAll();
+        for (int i = 0; i < 10; i++) {
+            final int slotIndex = i;
+            Gun gun = equippedGuns[i];
+            JPanel slot = new JPanel(new BorderLayout());
+            slot.setBackground(new Color(43, 45, 66));
+
+            if (gun != null) {
+                slot.setBorder(BorderFactory.createLineBorder(gun.getRarityColor(), 2));
+                slot.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+                JLabel nameLbl = new JLabel(gun.name, SwingConstants.CENTER);
+                nameLbl.setFont(new Font("SansSerif", Font.BOLD, 12));
+                nameLbl.setForeground(gun.getRarityColor());
+
+                JLabel iconLbl = new JLabel(SpriteLoader.getSprite(gun.spriteFileName, 55, 55, gun.name, gun.getRarityColor()));
+                iconLbl.setHorizontalAlignment(SwingConstants.CENTER);
+
+                JLabel mpsLbl = new JLabel(String.format("+%.1f/s (Ref %d)", gun.getEffectiveMps(), gun.duplicates), SwingConstants.CENTER);
+                mpsLbl.setFont(new Font("SansSerif", Font.PLAIN, 10));
+                mpsLbl.setForeground(Color.LIGHT_GRAY);
+
+                slot.add(nameLbl, BorderLayout.NORTH);
+                slot.add(iconLbl, BorderLayout.CENTER);
+                slot.add(mpsLbl, BorderLayout.SOUTH);
+
+                slot.addMouseListener(new MouseAdapter() {
+                    @Override
+                    public void mouseClicked(MouseEvent e) {
+                        inventory.add(equippedGuns[slotIndex]);
+                        equippedGuns[slotIndex] = null;
+                        refreshEquippedGrid();
+                        refreshInventoryUI();
+                        updateHeaderDisplays();
+                    }
+                });
+            } else {
+                slot.setBorder(BorderFactory.createDashedBorder(Color.GRAY));
+                JLabel emptyLbl = new JLabel("EMPTY SLOT", SwingConstants.CENTER);
+                emptyLbl.setForeground(Color.DARK_GRAY);
+                slot.add(emptyLbl, BorderLayout.CENTER);
+            }
+            equippedGridPanel.add(slot);
+        }
+        equippedGridPanel.revalidate();
+        equippedGridPanel.repaint();
+    }
+
+    private void refreshInventoryUI() {
+        inventoryPanel.removeAll();
+        for (int i = 0; i < inventory.size(); i++) {
+            final int invIndex = i;
+            Gun gun = inventory.get(invIndex);
+
+            JPanel card = new JPanel(new BorderLayout(5, 5));
+            card.setPreferredSize(new Dimension(90, 110));
+            card.setBackground(new Color(24, 26, 31));
+            card.setBorder(BorderFactory.createLineBorder(gun.getRarityColor(), 1));
+            card.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            JLabel nameLbl = new JLabel(gun.name, SwingConstants.CENTER);
+            nameLbl.setForeground(Color.WHITE);
+            nameLbl.setFont(new Font("SansSerif", Font.BOLD, 11));
+
+            JLabel iconLbl = new JLabel(SpriteLoader.getSprite(gun.spriteFileName, 50, 50, gun.name, gun.getRarityColor()));
+            iconLbl.setHorizontalAlignment(SwingConstants.CENTER);
+
+            JLabel dupeLbl = new JLabel("Dupes: " + gun.duplicates, SwingConstants.CENTER);
+            dupeLbl.setFont(new Font("SansSerif", Font.PLAIN, 10));
+            dupeLbl.setForeground(Color.LIGHT_GRAY);
+
+            card.add(nameLbl, BorderLayout.NORTH);
+            card.add(iconLbl, BorderLayout.CENTER);
+            card.add(dupeLbl, BorderLayout.SOUTH);
+
+            card.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    int freeSlot = -1;
+                    for (int s = 0; s < equippedGuns.length; s++) {
+                        if (equippedGuns[s] == null) {
+                            freeSlot = s;
+                            break;
+                        }
+                    }
+
+                    if (freeSlot != -1) {
+                        equippedGuns[freeSlot] = inventory.remove(invIndex);
+                        refreshEquippedGrid();
+                        refreshInventoryUI();
+                        updateHeaderDisplays();
+                    } else {
+                        JOptionPane.showMessageDialog(GFL2ClickerApp.this, "All 10 slots full! Click an equipped gun to unequip it first.", "Loadout Full", JOptionPane.INFORMATION_MESSAGE);
+                    }
+                }
+            });
+
+            inventoryPanel.add(card);
+        }
+        inventoryPanel.revalidate();
+        inventoryPanel.repaint();
+    }
+
+    // ==========================================
+    // 5. GAME LOOP TIMER
+    // ==========================================
+    private void startGameLoop() {
+        Timer timer = new Timer(100, e -> {
+            double mps = calculateTotalMPS();
+            balance += (mps / 10.0);
+            updateHeaderDisplays();
+            if (clickerTargetPanel != null) {
+                clickerTargetPanel.repaint(); // Animate ambient muzzle flares
+            }
+        });
+        timer.start();
+    }
+
+    // ==========================================
+    // 6. CUSTOM INTERACTIVE CLICK TARGET PANEL
+    // ==========================================
+    private class ClickerTargetPanel extends JPanel {
+        private double scaleFactor = 1.0;
+        private boolean showMuzzleFlare = false;
+        private Timer animationTimer;
+
+        public ClickerTargetPanel() {
+            setOpaque(false);
+            setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mousePressed(MouseEvent e) {
+                    balance += moneyPerClick;
+                    updateHeaderDisplays();
+
+                    /* AUDIO HOOK: Cookie Tap Sound Effect */
+                    AudioPlayer.playSound("sounds/cookie_tap.wav");
+
+                    // Trigger scale bounce & muzzle flares
+                    scaleFactor = 0.88;
+                    showMuzzleFlare = true;
+                    repaint();
+
+                    if (animationTimer != null && animationTimer.isRunning()) animationTimer.stop();
+                    animationTimer = new Timer(50, evt -> {
+                        scaleFactor = 1.0;
+                        showMuzzleFlare = false;
+                        repaint();
+                    });
+                    animationTimer.setRepeats(false);
+                    animationTimer.start();
+                }
+            });
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            int centerX = getWidth() / 2;
+            int centerY = getHeight() / 2;
+
+            // Draw Central Cookie / Terminal Sprite
+            int baseSize = 180;
+            int drawSize = (int) (baseSize * scaleFactor);
+            int targetX = centerX - drawSize / 2;
+            int targetY = centerY - drawSize / 2;
+
+            /* IMAGE HOOK: Cookie / Central Click Target Sprite */
+            ImageIcon cookieIcon = SpriteLoader.getSprite("cookie-clicker.gif", drawSize, drawSize, "TAP CREDITS", new Color(255, 183, 3));
+            cookieIcon.paintIcon(this, g2, targetX, targetY);
+
+            // Draw Equipped Guns Surrounding the Target in a Circle
+            int orbitRadius = 180;
+            for (int i = 0; i < equippedGuns.length; i++) {
+                Gun gun = equippedGuns[i];
+                if (gun == null) continue;
+
+                double angle = (2 * Math.PI / 10) * i;
+                int gx = (int) (centerX + orbitRadius * Math.cos(angle)) - 25;
+                int gy = (int) (centerY + orbitRadius * Math.sin(angle)) - 25;
+
+                // Render Gun Sprite
+                ImageIcon gunIcon = SpriteLoader.getSprite(gun.spriteFileName, 50, 50, gun.name, gun.getRarityColor());
+                gunIcon.paintIcon(this, g2, gx, gy);
+
+                // Draw Muzzle Flare Effect when firing/clicking
+                if (showMuzzleFlare || random.nextDouble() < 0.15) { // Flash when clicked or randomly auto-firing
+                    int flareX = (int) (gx + 15 * Math.cos(angle));
+                    int flareY = (int) (gy + 15 * Math.sin(angle));
+
+                    /* IMAGE HOOK: Muzzle Flare PNG Overlay */
+                    ImageIcon flareIcon = SpriteLoader.getSprite("muzzle_flare.png", 35, 35, "*FLASH*", Color.YELLOW);
+                    flareIcon.paintIcon(this, g2, flareX, flareY);
+                }
+            }
+
+            g2.dispose();
+        }
+    }
+
+    // ==========================================
+    // 7. AUDIO PLAYER UTILITY
+    // ==========================================
+    public static class AudioPlayer {
+        public static void playSound(String filePath) {
+            new Thread(() -> {
+                try {
+                    File soundFile = new File(filePath);
+                    if (soundFile.exists()) {
+                        AudioInputStream audioIn = AudioSystem.getAudioInputStream(soundFile);
+                        Clip clip = AudioSystem.getClip();
+                        clip.open(audioIn);
+                        clip.start();
+                    } else {
+                        // Soft log if audio file is not provided yet
+                        System.out.println("Audio clip missing: " + filePath);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Audio error: " + e.getMessage());
+                }
+            }).start();
+        }
+    }
+
+    // ==========================================
+    // 8. SPRITE LOADER & FALLBACK ENGINE
+    // ==========================================
+    // ==========================================
+    // 8. SPRITE LOADER (WITH ANIMATED GIF SUPPORT)
+    // ==========================================
+    public static class SpriteLoader {
+        private static final String IMAGE_DIR = "images/";
+
+        public static ImageIcon getSprite(String filename, int width, int height, String fallbackText, Color color) {
+            File file = new File(IMAGE_DIR + filename);
+
+            if (file.exists()) {
+                try {
+                    // IF IT IS A GIF: Load directly with ImageIcon to preserve animation!
+                    if (filename.toLowerCase().endsWith(".gif")) {
+                        return new ImageIcon(file.getAbsolutePath());
+                    }
+
+                    // STANDARD PNG/JPG: Read and scale normally
+                    BufferedImage originalImage = ImageIO.read(file);
+                    Image scaledImage = originalImage.getScaledInstance(width, height, Image.SCALE_SMOOTH);
+                    return new ImageIcon(scaledImage);
+                } catch (IOException e) {
+                    System.err.println("Error loading image: " + filename);
+                }
+            }
+
+            return new ImageIcon(createFallbackImage(width, height, fallbackText, color));
+        }
+
+        private static BufferedImage createFallbackImage(int width, int height, String text, Color accentColor) {
+            BufferedImage img = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g2 = img.createGraphics();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            g2.setColor(new Color(30, 32, 40));
+            g2.fillRect(0, 0, width, height);
+
+            g2.setColor(accentColor);
+            g2.setStroke(new BasicStroke(3));
+            g2.drawRect(2, 2, width - 5, height - 5);
+
+            g2.setColor(Color.WHITE);
+            g2.setFont(new Font("SansSerif", Font.BOLD, Math.max(10, width / 6)));
+            FontMetrics fm = g2.getFontMetrics();
+            int x = (width - fm.stringWidth(text)) / 2;
+            int y = (height - fm.getHeight()) / 2 + fm.getAscent();
+
+            g2.drawString(text, Math.max(5, x), y);
+            g2.dispose();
+
+            return img;
+        }
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new GFL2ClickerApp().setVisible(true));
+    }
+}
